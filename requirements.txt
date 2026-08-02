@@ -1,0 +1,21 @@
+# --- Web server ---
+fastapi==0.115.0
+uvicorn==0.30.6
+
+# --- Data validation for request bodies ---
+pydantic==2.9.2
+
+# --- Loads GROQ_API_KEY from .env file into environment variables ---
+python-dotenv==1.0.1
+
+# --- Official Groq client, used to call the LLM (llama-3.3-70b-versatile) ---
+groq==0.11.0
+
+# --- Turns text chunks into numerical vectors (embeddings) for search ---
+sentence-transformers==3.1.1
+
+# --- Local vector database: stores embeddings + lets us search by similarity ---
+chromadb==0.5.5
+
+# --- Splits long documents into smaller overlapping chunks before embedding ---
+langchain-text-splitters==0.3.0
