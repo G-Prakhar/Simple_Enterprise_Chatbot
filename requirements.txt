@@ -9,7 +9,8 @@ pydantic==2.9.2
 python-dotenv==1.0.1
 
 # --- Official Groq client, used to call the LLM (llama-3.3-70b-versatile) ---
-groq==0.11.0
+groq>=0.30.0
+httpx<0.28
 
 # --- Turns text chunks into numerical vectors (embeddings) for search ---
 sentence-transformers==3.1.1
