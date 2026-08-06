@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enterprise Chatbot</title>
+  <meta name="description" content="Enterprise AI chatbot — customer support, sales, and HR assistance.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Demo page placeholder ─────────────────────────── */
+    .demo-page {
+      text-align: center;
+      color: #94a3b8;
+      user-select: none;
+    }
+
+    .demo-page h1 {
+      font-size: 2rem;
+      font-weight: 600;
+      color: #1e293b;
+      margin-bottom: 8px;
+    }
+
+    .demo-page p {
+      font-size: 0.95rem;
+    }
+
+    /* ── Floating Launcher Button ──────────────────────── */
+    #chat-launcher {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 24px rgba(99, 102, 241, 0.45);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      z-index: 1000;
+    }
+
+    #chat-launcher:hover {
+      transform: scale(1.08);
+      box-shadow: 0 6px 32px rgba(99, 102, 241, 0.55);
+    }
+
+    #chat-launcher:active {
+      transform: scale(0.96);
+    }
+
+    /* Icon swap: chat <-> close */
+    #chat-launcher .icon-chat,
+    #chat-launcher .icon-close {
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      position: absolute;
+    }
+
+    #chat-launcher .icon-close {
+      opacity: 0;
+      transform: rotate(-90deg) scale(0.7);
+    }
+
+    #chat-launcher.open .icon-chat {
+      opacity: 0;
+      transform: rotate(90deg) scale(0.7);
+    }
+
+    #chat-launcher.open .icon-close {
+      opacity: 1;
+      transform: rotate(0deg) scale(1);
+    }
+
+    /* Notification dot */
+    #chat-launcher .notif-dot {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      width: 12px;
+      height: 12px;
+      background: #f43f5e;
+      border-radius: 50%;
+      border: 2px solid #fff;
+      transition: transform 0.2s ease, opacity 0.2s ease;
+    }
+
+    #chat-launcher.open .notif-dot {
+      opacity: 0;
+      transform: scale(0);
+    }
+
+    /* ── Chat Panel ────────────────────────────────────── */
+    #chat-panel {
+      position: fixed;
+      bottom: 96px;
+      right: 28px;
+      width: 360px;
+      height: 520px;
+      background: #ffffff;
+      border-radius: 20px;
+      box-shadow: 0 16px 60px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 999;
+
+      /* Closed state */
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(16px) scale(0.97);
+      transform-origin: bottom right;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+
+    #chat-panel.open {
+      opacity: 1;
+      pointer-events: all;
+      transform: translateY(0) scale(1);
+    }
+
+    /* ── Header ────────────────────────────────────────── */
+    #chat-header {
+      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+      padding: 16px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .header-text {
+      flex: 1;
+    }
+
+    .header-text h2 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .header-text span {
+      font-size: 0.72rem;
+      color: rgba(255, 255, 255, 0.75);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      background: #4ade80;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    /* Mode selector inside header */
+    #mode-select {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 0.72rem;
+      font-family: inherit;
+      cursor: pointer;
+      outline: none;
+      backdrop-filter: blur(4px);
+    }
+
+    #mode-select option {
+      background: #6366f1;
+      color: #fff;
+    }
+
+    /* ── Messages Area ─────────────────────────────────── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      scroll-behavior: smooth;
+    }
+
+    #messages::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #messages::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #messages::-webkit-scrollbar-thumb {
+      background: #e2e8f0;
+      border-radius: 4px;
+    }
+
+    /* Date stamp */
+    .date-stamp {
+      text-align: center;
+      font-size: 0.68rem;
+      color: #94a3b8;
+      margin: 4px 0;
+    }
+
+    /* Bubbles */
+    .msg {
+      padding: 10px 13px;
+      border-radius: 16px;
+      max-width: 78%;
+      font-size: 0.84rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      animation: bubbleIn 0.2s ease both;
+    }
+
+    @keyframes bubbleIn {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .user {
+      align-self: flex-end;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .bot {
+      align-self: flex-start;
+      background: #f1f5f9;
+      color: #1e293b;
+      border-bottom-left-radius: 4px;
+    }
+
+    /* Typing indicator */
+    .typing-indicator {
+      align-self: flex-start;
+      background: #f1f5f9;
+      border-radius: 16px;
+      border-bottom-left-radius: 4px;
+      padding: 12px 16px;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .typing-indicator span {
+      width: 7px;
+      height: 7px;
+      background: #94a3b8;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+
+    .typing-indicator span:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+
+    .typing-indicator span:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+
+    @keyframes bounce {
+
+      0%,
+      60%,
+      100% {
+        transform: translateY(0);
+      }
+
+      30% {
+        transform: translateY(-5px);
+      }
+    }
+
+    /* Escalation badge */
+    .escalation-badge {
+      align-self: center;
+      font-size: 0.72rem;
+      color: #f43f5e;
+      background: #fff1f2;
+      border: 1px solid #fecdd3;
+      border-radius: 20px;
+      padding: 4px 10px;
+      animation: bubbleIn 0.2s ease both;
+    }
+
+    /* ── Input Row ─────────────────────────────────────── */
+    #input-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-top: 1px solid #f1f5f9;
+      flex-shrink: 0;
+      background: #fff;
+    }
+
+    #user-input {
+      flex: 1;
+      padding: 9px 13px;
+      border-radius: 22px;
+      border: 1.5px solid #e2e8f0;
+      background: #f8fafc;
+      color: #1e293b;
+      font-size: 0.84rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.18s ease, background 0.18s ease;
+    }
+
+    #user-input:focus {
+      border-color: #6366f1;
+      background: #fff;
+    }
+
+    #user-input::placeholder {
+      color: #94a3b8;
+    }
+
+    #send-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: none;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+      box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+    }
+
+    #send-btn:hover {
+      transform: scale(1.08);
+    }
+
+    #send-btn:active {
+      transform: scale(0.94);
+    }
+
+    #send-btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+      transform: none;
+    }
+
+    /* ── Responsive ────────────────────────────────────── */
+    @media (max-width: 420px) {
+      #chat-panel {
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        height: 100%;
+        border-radius: 0;
+      }
+
+      #chat-launcher {
+        bottom: 20px;
+        right: 20px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Demo page background -->
+  <div class="demo-page">
+    <h1>Your Website</h1>
+    <p>The chat widget is in the bottom-right corner ↘</p>
+  </div>
+
+  <!-- ── Floating launcher button ── -->
+  <button id="chat-launcher" aria-label="Open chat" onclick="toggleChat()">
+    <!-- Chat icon -->
+    <svg class="icon-chat" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+    <!-- Close icon -->
+    <svg class="icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"
+      stroke-linecap="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+    <!-- Notification dot -->
+    <span class="notif-dot"></span>
+  </button>
+
+  <!-- ── Chat panel ── -->
+  <div id="chat-panel" role="dialog" aria-label="Chat assistant">
+
+    <!-- Header -->
+    <div id="chat-header">
+      <div class="avatar">🤖</div>
+      <div class="header-text">
+        <h2>Enterprise Assistant</h2>
+        <span><span class="status-dot"></span>Online &middot; typically replies instantly</span>
+      </div>
+      <select id="mode-select" title="Select bot type">
+        <option value="support">Support</option>
+        <option value="lead_qualification">Sales</option>
+        <option value="hr_support">HR</option>
+      </select>
+    </div>
+
+    <!-- Messages -->
+    <div id="messages">
+      <div class="date-stamp">Today</div>
+    </div>
+
+    <!-- Input -->
+    <div id="input-row">
+      <input id="user-input" type="text" placeholder="Message&hellip;" autocomplete="off" aria-label="Type a message" />
+      <button id="send-btn" onclick="sendMessage()" aria-label="Send message" disabled>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"
+          stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+        </svg>
+      </button>
+    </div>
+
+  </div>
+
+  <script>
+    // Where the FastAPI backend is running. Change this to your deployed
+    // backend URL once you host it (e.g. a Render URL).
+    const API_URL = "https://simple-enterprise-chatbot.onrender.com/chat";
+
+    // A random ID generated once per browser tab, so the backend can tell
+    // different users' conversations apart from each other.
+    const sessionId = crypto.randomUUID();
+
+    // ── DOM refs ──────────────────────────────────────────
+    const launcher = document.getElementById("chat-launcher");
+    const panel = document.getElementById("chat-panel");
+    const messagesEl = document.getElementById("messages");
+    const inputEl = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+    const modeSelect = document.getElementById("mode-select");
+
+    let isOpen = false;
+    let isBusy = false;
+    let welcomed = false;
+
+    // ── Toggle open/close ──────────────────────────────────
+    function toggleChat() {
+      isOpen = !isOpen;
+      launcher.classList.toggle("open", isOpen);
+      panel.classList.toggle("open", isOpen);
+
+      if (isOpen) {
+        if (!welcomed) { showWelcome(); welcomed = true; }
+        setTimeout(() => inputEl.focus(), 260);
+      }
+    }
+
+    // ── Welcome message ────────────────────────────────────
+    function showWelcome() {
+      const greetings = {
+        support: "👋 Hi there! How can I help you today?",
+        lead_qualification: "👋 Hey! Looking for the right solution? I'm here to help.",
+        hr_support: "👋 Hello! Got an HR question? I'm on it.",
+      };
+      addMessage(greetings[modeSelect.value] || "👋 Hi! How can I help?", "bot");
+    }
+
+    // ── Add bubble ─────────────────────────────────────────
+    function addMessage(text, sender) {
+      const div = document.createElement("div");
+      div.className = "msg " + sender;
+      div.textContent = text;
+      messagesEl.appendChild(div);
+      scrollToBottom();
+    }
+
+    // ── Typing indicator ───────────────────────────────────
+    let typingEl = null;
+    function showTyping() {
+      typingEl = document.createElement("div");
+      typingEl.className = "typing-indicator";
+      typingEl.innerHTML = "<span></span><span></span><span></span>";
+      messagesEl.appendChild(typingEl);
+      scrollToBottom();
+    }
+    function hideTyping() {
+      if (typingEl) { typingEl.remove(); typingEl = null; }
+    }
+
+    // ── Send message ───────────────────────────────────────
+    async function sendMessage() {
+      const text = inputEl.value.trim();
+      if (!text || isBusy) return;
+
+      isBusy = true;
+      sendBtn.disabled = true;
+      addMessage(text, "user");
+      inputEl.value = "";
+      updateSendBtn();
+      showTyping();
+
+      try {
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: sessionId,
+            message: text,
+            bot_type: modeSelect.value,   // tells the backend which "personality" to use
+          }),
+        });
+        const data = await res.json();
+        hideTyping();
+        addMessage(data.reply, "bot");
+
+        // If this turn triggered a REAL escalation (logged on the backend),
+        // show a visible confirmation so it's obvious this wasn't just the
+        // model talking -- something was actually recorded.
+        if (data.escalated) {
+          const badge = document.createElement("div");
+          badge.className = "escalation-badge";
+          badge.textContent = "🔔 Escalated to a human agent";
+          messagesEl.appendChild(badge);
+          scrollToBottom();
+        }
+      } catch (err) {
+        hideTyping();
+        addMessage("⚠️ Something went wrong. Please try again.", "bot");
+      } finally {
+        isBusy = false;
+        sendBtn.disabled = !inputEl.value.trim();
+      }
+    }
+
+    // ── Helpers ────────────────────────────────────────────
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function updateSendBtn() {
+      sendBtn.disabled = !inputEl.value.trim() || isBusy;
+    }
+
+    // ── Events ─────────────────────────────────────────────
+    inputEl.addEventListener("input", updateSendBtn);
+
+    // Let the user press Enter instead of clicking the button
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+
+    // Re-greet when mode switches (only if already welcomed)
+    modeSelect.addEventListener("change", () => {
+      if (welcomed) {
+        messagesEl.innerHTML = '<div class="date-stamp">Today</div>';
+        showWelcome();
+      }
+    });
+  </script>
+</body>
+
+</html>
