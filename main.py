@@ -49,8 +49,8 @@ app = FastAPI(title="Enterprise Support Chatbot")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5500",              # local development
-        "https://simpleenterprisechatbot.netlify.app/",  # replace with your real Netlify URL
+        "http://localhost:5500",                        # local development
+        "https://simpleenterprisechatbot.netlify.app",  # Netlify frontend (no trailing slash!)
     ],
     allow_methods=["*"],
     allow_headers=["*"],
