@@ -9,14 +9,24 @@ pydantic==2.9.2
 python-dotenv==1.0.1
 
 # --- Official Groq client, used to call the LLM (llama-3.3-70b-versatile) ---
+# NOTE: pinned >= 0.30.0 because older groq versions pass a "proxies"
+# argument to httpx that newer httpx versions removed, causing:
+# TypeError: Client.__init__() got an unexpected keyword argument 'proxies'
 groq>=0.30.0
 httpx<0.28
 
-# --- Turns text chunks into numerical vectors (embeddings) for search ---
-sentence-transformers==3.1.1
+# --- NOTE: sentence-transformers was removed on purpose. It pulls in
+# the full PyTorch + CUDA stack (torch, triton, nvidia-cu13-*, etc.) --
+# several hundred MB that alone can exceed Render's free-tier 512MB RAM
+# limit and get the process OOM-killed (exit code 137). We now use
+# chromadb's own onnxruntime-based DefaultEmbeddingFunction instead
+# (see ingest.py / main.py), which needs no torch at all.
 
 # --- Local vector database: stores embeddings + lets us search by similarity ---
 chromadb==0.5.5
 
 # --- Splits long documents into smaller overlapping chunks before embedding ---
 langchain-text-splitters==0.3.0
+
+# --- HTTP client used to call the Freshdesk API for real ticket creation ---
+requests==2.32.3

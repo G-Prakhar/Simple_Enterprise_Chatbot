@@ -19,22 +19,27 @@ Pipeline for each file in knowledge/:
 
 import os
 import chromadb
-from sentence_transformers import SentenceTransformer
+from chromadb.utils import embedding_functions
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 # -----------------------------------------------------------------------
-# STEP 1: Load the embedding model.
+# STEP 1: Load the embedding function.
 #
-# "all-MiniLM-L6-v2" is a small, free, open-source model that converts
-# text into a 384-number vector. Similar meanings produce similar vectors,
-# which is what lets us do "search by meaning" instead of "search by
-# exact keyword".
+# We use ChromaDB's own DefaultEmbeddingFunction here instead of loading
+# sentence-transformers directly. Under the hood it's the same underlying
+# model family (a small MiniLM model), but it runs on "onnxruntime"
+# instead of full PyTorch.
 #
-# It downloads once (~80MB) and then runs fully offline/locally — this
-# step costs no API money, unlike the LLM call itself.
+# WHY THIS MATTERS: sentence-transformers pulls in the entire PyTorch
+# stack as a dependency (torch, plus -- on Linux -- a pile of NVIDIA CUDA
+# packages even when there's no GPU). That's several hundred MB just to
+# load into memory, which is enough by itself to exceed the 512MB RAM
+# limit on Render's free tier and get your app killed (exit code 137 =
+# out of memory). onnxruntime has no such baggage, so this does the same
+# job for a fraction of the memory footprint.
 # -----------------------------------------------------------------------
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_function = embedding_functions.DefaultEmbeddingFunction()
 
 
 # -----------------------------------------------------------------------
@@ -45,10 +50,16 @@ embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 # time you restart the server.
 #
 # get_or_create_collection is like "use this table, create it if it
-# doesn't exist yet". We name it "company_kb" (company knowledge base).
+# doesn't exist yet". We name it "company_kb" (company knowledge base),
+# and pass embedding_function so ChromaDB knows HOW to turn text into
+# vectors automatically whenever we add or query documents -- we no
+# longer compute embeddings ourselves.
 # -----------------------------------------------------------------------
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_or_create_collection(name="company_kb")
+collection = chroma_client.get_or_create_collection(
+    name="company_kb",
+    embedding_function=embedding_function,
+)
 
 
 # -----------------------------------------------------------------------
@@ -100,24 +111,21 @@ def ingest_folder(folder_path: str = "knowledge") -> None:
         if not chunks:
             continue  # empty file, nothing to do
 
-        # (c) Convert all chunks for this file into embeddings in one batch
-        # .encode() returns a numpy array; ChromaDB wants plain lists,
-        # hence .tolist()
-        chunk_embeddings = embedding_model.encode(chunks).tolist()
-
-        # Build a unique ID for every chunk so ChromaDB can store/update it.
-        # Format: "filename-0", "filename-1", ... so IDs never collide
-        # between different files.
+        # (c) Build IDs and metadata for each chunk.
+        # Unique ID format: "filename-0", "filename-1", ... so IDs never
+        # collide between different files.
         chunk_ids = [f"{filename}-{i}" for i in range(len(chunks))]
 
         # Metadata lets us later show "this answer came from refund_policy.md"
         chunk_metadata = [{"source": filename} for _ in chunks]
 
-        # (d) Store everything in ChromaDB in one call
+        # (d) Store everything in ChromaDB in one call. We do NOT compute
+        # embeddings ourselves here -- because the collection was created
+        # with embedding_function above, ChromaDB automatically embeds
+        # each document in `chunks` internally before storing it.
         collection.add(
             ids=chunk_ids,
             documents=chunks,
-            embeddings=chunk_embeddings,
             metadatas=chunk_metadata,
         )
 

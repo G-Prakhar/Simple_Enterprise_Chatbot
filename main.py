@@ -17,6 +17,7 @@ Run this file with:
 
 import os
 import json
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -27,7 +28,7 @@ from pydantic import BaseModel
 
 from groq import Groq
 import chromadb
-from sentence_transformers import SentenceTransformer
+from chromadb.utils import embedding_functions
 
 
 # =========================================================================
@@ -41,14 +42,16 @@ load_dotenv()
 app = FastAPI(title="Enterprise Support Chatbot")
 
 # CORS = Cross-Origin Resource Sharing. Without this, a browser will block
-# your frontend (running on, say, localhost:5500 or a Netlify domain) from
-# calling this backend (running on localhost:8000 or a Render domain),
-# because they're technically "different origins". allow_origins=["*"]
-# means "any website can call this API" — fine for a demo/internal tool,
-# but for production you'd restrict this to your actual frontend's URL.
+# your frontend from calling this backend, since they're on different
+# domains. In production, restrict this to your actual frontend's URL
+# instead of "*" -- otherwise any website could call your API and burn
+# through your Groq quota.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5500",              # local development
+        "https://simpleenterprisechatbot.netlify.app/",  # replace with your real Netlify URL
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,17 +59,52 @@ app.add_middleware(
 # The Groq client — this is what actually talks to the LLM over the internet
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# Same embedding model used in ingest.py. IMPORTANT: it must be the exact
-# same model here as in ingest.py, otherwise the vectors won't be
-# comparable to each other.
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+# Same embedding function used in ingest.py -- MUST match, otherwise
+# vectors computed here won't be comparable to what's stored.
+#
+# We use ChromaDB's DefaultEmbeddingFunction (onnxruntime-based) instead
+# of loading sentence-transformers/torch directly. sentence-transformers
+# pulls in the full PyTorch + CUDA stack, which alone is enough to exceed
+# the 512MB RAM limit on Render's free tier and get the process killed
+# (exit code 137). onnxruntime does the same embedding job with a much
+# smaller memory footprint.
+embedding_function = embedding_functions.DefaultEmbeddingFunction()
 
-# Connect to the same ChromaDB folder that ingest.py wrote to
+# Connect to the same ChromaDB folder that ingest.py wrote to. We pass
+# the same embedding_function so queries later get embedded the same way
+# documents were embedded during ingestion.
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_collection(name="company_kb")
+collection = chroma_client.get_collection(
+    name="company_kb",
+    embedding_function=embedding_function,
+)
 
 # Change this to your actual company name — it gets inserted into prompts
 COMPANY_NAME = "Google"
+
+# -------------------------------------------------------------------------
+# ZOHO DESK CONFIG
+# -------------------------------------------------------------------------
+# Zoho uses OAuth2 rather than a simple API key. ZOHO_REFRESH_TOKEN,
+# ZOHO_CLIENT_ID, and ZOHO_CLIENT_SECRET come from running
+# get_zoho_refresh_token.py once. ZOHO_ORG_ID and ZOHO_DEPARTMENT_ID come
+# from running get_zoho_org_and_department.py once (after the refresh
+# token exists). ZOHO_DC is your data center suffix ("com", "in", "eu",
+# etc.) -- same one used in both setup scripts.
+# -------------------------------------------------------------------------
+ZOHO_CLIENT_ID = os.getenv("ZOHO_CLIENT_ID")
+ZOHO_CLIENT_SECRET = os.getenv("ZOHO_CLIENT_SECRET")
+ZOHO_REFRESH_TOKEN = os.getenv("ZOHO_REFRESH_TOKEN")
+ZOHO_ORG_ID = os.getenv("ZOHO_ORG_ID")
+ZOHO_DEPARTMENT_ID = os.getenv("ZOHO_DEPARTMENT_ID")
+ZOHO_DC = os.getenv("ZOHO_DC", "com")
+ZOHO_REQUESTER_EMAIL = os.getenv("ZOHO_REQUESTER_EMAIL", "chatbot@google.com")
+
+# Zoho access tokens expire after about an hour. We cache the current one
+# here in memory and refresh it automatically when it's missing/expired,
+# rather than requesting a brand new one on every single ticket (which
+# would work, but is wasteful and slower).
+_zoho_access_token: str | None = None
 
 # In-memory conversation storage: {session_id: [list of messages]}
 # NOTE: this resets every time the server restarts, and doesn't work if
@@ -159,17 +197,16 @@ def retrieve_context(query: str, k: int = 4) -> str:
     knowledge base and returns them joined into one string.
 
     How it works:
-      1. Turn the user's question into an embedding (same model as ingest.py)
+      1. Pass the raw question text to ChromaDB via query_texts -- the
+         collection was created with embedding_function, so ChromaDB
+         embeds the query internally using that same function before
+         comparing it against stored vectors.
       2. Ask ChromaDB: "which stored chunks have embeddings closest to this
          one?" (closeness = similarity in meaning, not exact word match)
       3. Return those chunks' text, joined with blank lines between them
     """
-    # .encode() expects a list of strings, so we wrap `query` in a list.
-    # We take [0] because we only embedded one query.
-    query_embedding = embedding_model.encode([query]).tolist()
-
     results = collection.query(
-        query_embeddings=query_embedding,
+        query_texts=[query],
         n_results=k,
     )
 
@@ -230,29 +267,97 @@ def wants_escalation(user_message: str, last_assistant_message: str | None) -> b
     return False
 
 
+def create_freshdesk_ticket(session_id: str, bot_type: str, transcript: list[dict]) -> dict | None:
+    """
+    Creates a real support ticket in Freshdesk so an actual human agent
+    sees it in their queue. This is the piece that turns "connecting you
+    to a human agent" from a claim into a fact.
+
+    Returns a dict with the ticket's id and a direct link on success, or
+    None if ticket creation failed (missing credentials, network issue,
+    bad request, etc). Callers must handle None gracefully -- a Freshdesk
+    outage should never crash the chatbot itself.
+
+    NOTE on the requester email: Freshdesk requires every ticket to have
+    a requester email. This demo doesn't collect the real user's email,
+    so it falls back to FRESHDESK_REQUESTER_EMAIL for every ticket. For a
+    real deployment, add an email field to the frontend (e.g. ask for it
+    once escalation is confirmed) and pass the real address through
+    ChatRequest instead.
+    """
+    if not FRESHDESK_DOMAIN or not FRESHDESK_API_KEY:
+        print("Freshdesk is not configured (missing FRESHDESK_DOMAIN or "
+              "FRESHDESK_API_KEY in .env) — skipping real ticket creation.")
+        return None
+
+    # Turn the transcript into readable plain text for the ticket body
+    conversation_text = "\n\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in transcript
+    )
+
+    url = f"https://{FRESHDESK_DOMAIN}.freshdesk.com/api/v2/tickets"
+
+    payload = {
+        "subject": f"Chatbot escalation ({bot_type}) — session {session_id}",
+        "description": conversation_text,
+        "email": FRESHDESK_REQUESTER_EMAIL,
+        "priority": 2,     # Freshdesk priority: 1=Low, 2=Medium, 3=High, 4=Urgent
+        "status": 2,       # Freshdesk status: 2=Open
+        "tags": ["chatbot-escalation", bot_type],
+    }
+
+    try:
+        # Freshdesk's API uses HTTP Basic Auth with your API key as the
+        # username and the literal string "X" as the password.
+        response = requests.post(
+            url,
+            json=payload,
+            auth=(FRESHDESK_API_KEY, "X"),
+            timeout=10,
+        )
+        response.raise_for_status()   # raises an exception on 4xx/5xx responses
+
+        ticket = response.json()
+        ticket_id = ticket.get("id")
+        return {
+            "id": ticket_id,
+            "url": f"https://{FRESHDESK_DOMAIN}.freshdesk.com/a/tickets/{ticket_id}",
+        }
+
+    except requests.exceptions.RequestException as e:
+        # Covers network errors, timeouts, and non-2xx responses. We log
+        # it and return None rather than letting this take down the
+        # /chat endpoint -- the user should still get a reply even if
+        # Freshdesk is temporarily unreachable.
+        print(f"Freshdesk ticket creation failed: {e}")
+        return None
+
+
 def log_escalation(session_id: str, bot_type: str, history: list[dict]) -> dict:
     """
     Records a real escalation event: who (session_id), what kind of bot,
-    when, and the full conversation transcript so a human has context.
+    when, the full conversation transcript, AND now a real Freshdesk
+    ticket so a human agent actually gets notified.
 
-    Writes to both:
+    Writes to:
       - escalation_queue (in memory, for the /escalations endpoint)
-      - escalations.jsonl (on disk, so it survives a server restart)
-
-    In a real deployment, this is the function you'd extend to also email
-    the support team, post to a Slack channel, or create a ticket in
-    Zendesk/Freshdesk via their API.
+      - escalations.jsonl (on disk, survives a server restart)
+      - Freshdesk (a real ticket a support agent will see in their queue)
     """
+    transcript = [m for m in history if m["role"] != "system"]
+
+    freshdesk_ticket = create_freshdesk_ticket(session_id, bot_type, transcript)
+
     entry = {
         "session_id": session_id,
         "bot_type": bot_type,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "transcript": [m for m in history if m["role"] != "system"],
+        "transcript": transcript,
+        "freshdesk_ticket": freshdesk_ticket,   # None if Freshdesk call failed
     }
 
     escalation_queue.append(entry)
 
-    # Append as one JSON object per line (a common, simple log format)
     with open(ESCALATIONS_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
@@ -325,9 +430,14 @@ def chat(req: ChatRequest):
     # STEP 3: append the user's raw message to clean history
     history.append({"role": "user", "content": req.message})
 
-    # STEP 4: if this turn is a genuine escalation, actually record it
+    # STEP 4: if this turn is a genuine escalation, actually record it --
+    # this now includes creating a real Freshdesk ticket. escalation_entry
+    # stays None if nothing was escalated this turn.
+    escalation_entry = None
     if escalated_this_turn:
-        log_escalation(req.session_id, req.bot_type, history)
+        escalation_entry = log_escalation(req.session_id, req.bot_type, history)
+
+    ticket = escalation_entry["freshdesk_ticket"] if escalation_entry else None
 
     # STEP 5: build a temporary call list. Alongside the retrieved
     # context, we tell the model the TRUE escalation status for this
@@ -342,18 +452,30 @@ def chat(req: ChatRequest):
             f"the conversation history instead):\n\n{context}"
         ),
     }
-    escalation_note = {
-        "role": "system",
-        "content": (
-            "A human agent has just been notified about this conversation "
-            "and will follow up. Confirm this to the user in your reply."
-            if escalated_this_turn else
+    if escalated_this_turn and ticket:
+        escalation_status_text = (
+            f"A human agent has just been notified about this conversation "
+            f"-- support ticket #{ticket['id']} was created. Confirm this "
+            f"to the user and mention a support agent will follow up soon. "
+            f"You may mention the ticket number."
+        )
+    elif escalated_this_turn:
+        # Escalation was requested but the real Freshdesk call failed
+        # (e.g. misconfigured credentials, Freshdesk down). Be honest
+        # about this rather than claiming a ticket exists.
+        escalation_status_text = (
+            "The user asked for a human agent, but creating a support "
+            "ticket failed on our end. Apologize, and tell them to email "
+            "support directly instead as a fallback."
+        )
+    else:
+        escalation_status_text = (
             "No human escalation has occurred yet. Do NOT tell the user "
-            "you are connecting them to a human agent or that one has been "
-            "notified -- only OFFER to connect them if that's genuinely "
-            "appropriate, and wait for their confirmation."
-        ),
-    }
+            "you are connecting them to a human agent or that a ticket has "
+            "been created -- only OFFER to connect them if that's "
+            "genuinely appropriate, and wait for their confirmation."
+        )
+    escalation_note = {"role": "system", "content": escalation_status_text}
     call_messages = [history[0], context_note, escalation_note] + history[1:]
 
     # STEP 6: call the LLM
@@ -373,9 +495,15 @@ def chat(req: ChatRequest):
     sessions[req.session_id] = history[-20:]
 
     # STEP 9: send the reply back to the frontend, including whether a
-    # real escalation happened this turn (useful for the UI to show e.g.
-    # a "connected to support" badge)
-    return {"reply": reply, "bot_type": req.bot_type, "escalated": escalated_this_turn}
+    # real escalation happened this turn and the resulting ticket info
+    # (useful for the UI to show a "connected to support" badge/link)
+    return {
+        "reply": reply,
+        "bot_type": req.bot_type,
+        "escalated": escalated_this_turn,
+        "ticket_id": ticket["id"] if ticket else None,
+        "ticket_url": ticket["url"] if ticket else None,
+    }
 
 
 # =========================================================================
